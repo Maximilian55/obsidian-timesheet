@@ -1,6 +1,8 @@
 # Obsidian Timesheet
 
 Minimal Obsidian plugin for tracking task sessions by project link.
+Current codebase is very much "vibe-coded"
+Still need to go through and trim the fat from AI
 
 ## Commands
 - `Timesheet: Start Task`
@@ -23,3 +25,8 @@ This generates `main.js` in the plugin root.
 ## Data Output
 - Canonical session data is stored in vault JSON at `Timesheets/timesheet-data.json` (configurable in settings).
 - Plugin settings are stored in Obsidian plugin data.
+
+## To Do
+- Trim fat from AI
+- Add some display to status bar that shows active sessions
+- remove prefix project folder path from UI when selecting the project that the session is for
