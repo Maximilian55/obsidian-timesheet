@@ -1,0 +1,1 @@
+// Dataview query template scaffold.
