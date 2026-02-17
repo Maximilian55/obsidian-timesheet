@@ -4,7 +4,7 @@ import { TimesheetPluginSettings } from "../types";
 
 export function getDefaultSettings(): TimesheetPluginSettings {
   return {
-    timesheetFilePath: "Timesheets.md",
+    timesheetJsonPath: "Timesheets/timesheet-data.json",
     projectNotesFolder: "notes/projects",
   };
 }
@@ -24,16 +24,16 @@ export class SettingsTab extends PluginSettingTab {
     containerEl.createEl("h2", { text: "Timesheet" });
 
     new Setting(containerEl)
-      .setName("Timesheet file path")
-      .setDesc("Markdown file where the generated timesheet table is written.")
+      .setName("Timesheet JSON path")
+      .setDesc("Vault path for canonical timesheet JSON storage.")
       .addText((text) => {
         text
-          .setPlaceholder("Timesheets.md")
-          .setValue(this.plugin.settings.timesheetFilePath)
+          .setPlaceholder("Timesheets/timesheet-data.json")
+          .setValue(this.plugin.settings.timesheetJsonPath)
           .onChange(async (value) => {
             const trimmed = value.trim();
             await this.plugin.updateSettings({
-              timesheetFilePath: trimmed.length > 0 ? trimmed : "Timesheets.md",
+              timesheetJsonPath: trimmed.length > 0 ? trimmed : "Timesheets/timesheet-data.json",
             });
           });
       });

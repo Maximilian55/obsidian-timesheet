@@ -29,10 +29,6 @@ function openProjectPickerModal(app: App, folderFilter: string): Promise<string 
             });
       }
 
-      getItems(): TFile[] {
-        return this.items;
-      }
-
       getSuggestions(query: string): TFile[] {
         const normalized = query.toLowerCase().trim();
         if (!normalized) {
@@ -74,7 +70,53 @@ function openProjectPickerModal(app: App, folderFilter: string): Promise<string 
   });
 }
 
-function openStartTaskModal(app: App, projectNotesFolder: string): Promise<StartTaskInput | null> {
+function openTaskPickerModal(app: App, tasks: string[]): Promise<string | null> {
+  return new Promise((resolve) => {
+    class TaskPickerModal extends SuggestModal<string> {
+      private resolved = false;
+
+      getSuggestions(query: string): string[] {
+        const normalized = query.toLowerCase().trim();
+        if (!normalized) {
+          return tasks;
+        }
+
+        return tasks.filter((task) => task.toLowerCase().includes(normalized));
+      }
+
+      renderSuggestion(item: string, el: HTMLElement): void {
+        el.setText(item);
+      }
+
+      selectSuggestion(item: string, evt: MouseEvent | KeyboardEvent): void {
+        this.resolved = true;
+        resolve(item);
+        super.selectSuggestion(item, evt);
+      }
+
+      onChooseSuggestion(_item: string, _evt: MouseEvent | KeyboardEvent): void {
+        // Selection is resolved in selectSuggestion to avoid close-order race issues.
+      }
+
+      onClose(): void {
+        super.onClose();
+        if (!this.resolved) {
+          resolve(null);
+        }
+      }
+    }
+
+    const modal = new TaskPickerModal(app);
+    modal.setPlaceholder("Select a previous task");
+    modal.open();
+  });
+}
+
+function openStartTaskModal(
+  app: App,
+  projectNotesFolder: string,
+  getTaskSuggestions: (project: string) => string[],
+): Promise<StartTaskInput | null> {
   return new Promise((resolve) => {
     class StartTaskModal extends Modal {
       private resolved = false;
@@ -96,13 +138,19 @@ function openStartTaskModal(app: App, projectNotesFolder: string): Promise<Start
         projectInput.style.width = "100%";
         projectInput.readOnly = true;
 
-        const chooseButton = projectRow.createEl("button", { text: "Choose" });
+        const chooseProjectButton = projectRow.createEl("button", { text: "Choose" });
 
         const taskLabel = contentEl.createEl("label", { text: "Task:" });
         taskLabel.style.display = "block";
         taskLabel.style.marginTop = "8px";
-        const taskInput = contentEl.createEl("input", { type: "text" });
+
+        const taskRow = contentEl.createDiv();
+        taskRow.style.display = "flex";
+        taskRow.style.gap = "8px";
+
+        const taskInput = taskRow.createEl("input", { type: "text" });
         taskInput.style.width = "100%";
+        const chooseTaskButton = taskRow.createEl("button", { text: "Suggest" });
 
         const buttonRow = contentEl.createDiv();
         buttonRow.style.display = "flex";
@@ -114,8 +162,40 @@ function openStartTaskModal(app: App, projectNotesFolder: string): Promise<Start
 
         const chooseProject = async (): Promise<void> => {
           const project = await openProjectPickerModal(app, projectNotesFolder);
-          if (project) {
-            projectInput.value = project;
+          if (!project) {
+            return;
+          }
+
+          projectInput.value = project;
+          const suggestions = getTaskSuggestions(project);
+          if (suggestions.length > 0) {
+            taskInput.placeholder = suggestions[0];
+            if (!taskInput.value.trim()) {
+              taskInput.value = suggestions[0];
+            }
+          } else {
+            taskInput.placeholder = "";
+          }
+
+          taskInput.focus();
+        };
+
+        const chooseTask = async (): Promise<void> => {
+          const project = projectInput.value.trim();
+          if (!project) {
+            new Notice("Choose a project first.");
+            return;
+          }
+
+          const suggestions = getTaskSuggestions(project);
+          if (suggestions.length === 0) {
+            new Notice("No previous tasks for this project yet.");
+            return;
+          }
+
+          const task = await openTaskPickerModal(app, suggestions);
+          if (task) {
+            taskInput.value = task;
             taskInput.focus();
           }
         };
@@ -134,8 +214,11 @@ function openStartTaskModal(app: App, projectNotesFolder: string): Promise<Start
           resolve(null);
           this.close();
         });
-        chooseButton.addEventListener("click", () => {
+        chooseProjectButton.addEventListener("click", () => {
           void chooseProject();
+        });
+        chooseTaskButton.addEventListener("click", () => {
+          void chooseTask();
         });
 
         taskInput.addEventListener("keydown", (event) => {
@@ -270,7 +353,11 @@ export function registerCommands(plugin: TimesheetPlugin): void {
     name: "Timesheet: Start Task",
     callback: async () => {
       try {
-        const input = await openStartTaskModal(plugin.app, plugin.settings.projectNotesFolder);
+        const input = await openStartTaskModal(
+          plugin.app,
+          plugin.settings.projectNotesFolder,
+          (project) => plugin.sessionManager.getTaskSuggestions(project),
+        );
         if (!input) {
           return;
         }

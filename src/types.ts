@@ -7,12 +7,20 @@ export interface TimesheetSession {
   durationMinutes?: number;
 }
 
+export interface TaskHistoryEntry {
+  name: string;
+  lastUsedAt: string;
+  useCount: number;
+}
+
 export interface TimesheetPluginData {
+  schemaVersion: number;
   sessions: TimesheetSession[];
+  taskHistoryByProject: Record<string, TaskHistoryEntry[]>;
 }
 
 export interface TimesheetPluginSettings {
-  timesheetFilePath: string;
+  timesheetJsonPath: string;
   projectNotesFolder: string;
 }
 

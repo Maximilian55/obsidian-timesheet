@@ -21,5 +21,5 @@ This generates `main.js` in the plugin root.
 5. Enable `Timesheet`
 
 ## Data Output
-- Session state is stored in plugin data.
-- Table is written to `Timesheets.md` in the vault.
+- Canonical session data is stored in vault JSON at `Timesheets/timesheet-data.json` (configurable in settings).
+- Plugin settings are stored in Obsidian plugin data.

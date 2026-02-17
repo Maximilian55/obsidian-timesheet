@@ -1,20 +1,32 @@
 import { computeDurationMinutes } from "./duration";
-import { TimesheetPluginData, TimesheetSession } from "../types";
+import { TaskHistoryEntry, TimesheetPluginData, TimesheetSession } from "../types";
 
 function generateSessionId(): string {
   return `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
 }
 
+function cloneData(data: TimesheetPluginData): TimesheetPluginData {
+  return {
+    schemaVersion: data.schemaVersion,
+    sessions: [...data.sessions],
+    taskHistoryByProject: { ...data.taskHistoryByProject },
+  };
+}
+
 export class SessionManager {
   private readonly data: TimesheetPluginData;
-  private readonly onChange: (sessions: TimesheetSession[]) => Promise<void>;
+  private readonly onChange: (data: TimesheetPluginData) => Promise<void>;
 
   constructor(
     data: TimesheetPluginData,
-    onChange: (sessions: TimesheetSession[]) => Promise<void>,
+    onChange: (data: TimesheetPluginData) => Promise<void>,
   ) {
     this.data = data;
     this.onChange = onChange;
+  }
+
+  getData(): TimesheetPluginData {
+    return cloneData(this.data);
   }
 
   getAllSessions(): TimesheetSession[] {
@@ -23,6 +35,49 @@ export class SessionManager {
 
   getActiveSessions(): TimesheetSession[] {
     return this.data.sessions.filter((session) => !session.endTime);
+  }
+
+  getTaskSuggestions(project: string): string[] {
+    const history = this.data.taskHistoryByProject[project] ?? [];
+
+    return [...history]
+      .sort((a, b) => {
+        if (a.useCount !== b.useCount) {
+          return b.useCount - a.useCount;
+        }
+
+        return a.lastUsedAt < b.lastUsedAt ? 1 : -1;
+      })
+      .map((entry) => entry.name);
+  }
+
+  private touchTaskHistory(project: string, task: string, atIso: string): void {
+    const existing = this.data.taskHistoryByProject[project] ?? [];
+    const byName = new Map<string, TaskHistoryEntry>();
+
+    for (const entry of existing) {
+      byName.set(entry.name.toLowerCase(), { ...entry });
+    }
+
+    const key = task.toLowerCase();
+    const previous = byName.get(key);
+
+    if (previous) {
+      byName.set(key, {
+        ...previous,
+        name: previous.name,
+        useCount: previous.useCount + 1,
+        lastUsedAt: atIso,
+      });
+    } else {
+      byName.set(key, {
+        name: task,
+        useCount: 1,
+        lastUsedAt: atIso,
+      });
+    }
+
+    this.data.taskHistoryByProject[project] = [...byName.values()];
   }
 
   async startSession(project: string, task: string): Promise<TimesheetSession> {
@@ -35,7 +90,8 @@ export class SessionManager {
     };
 
     this.data.sessions.push(session);
-    await this.onChange(this.getAllSessions());
+    this.touchTaskHistory(project, task, now);
+    await this.onChange(this.getData());
     return session;
   }
 
@@ -49,7 +105,7 @@ export class SessionManager {
     session.endTime = end;
     session.durationMinutes = computeDurationMinutes(session.startTime, end);
 
-    await this.onChange(this.getAllSessions());
+    await this.onChange(this.getData());
     return session;
   }
 
@@ -65,7 +121,7 @@ export class SessionManager {
       session.durationMinutes = computeDurationMinutes(session.startTime, end);
     }
 
-    await this.onChange(this.getAllSessions());
+    await this.onChange(this.getData());
     return active.length;
   }
 }

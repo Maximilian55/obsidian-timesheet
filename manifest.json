@@ -3,7 +3,7 @@
   "name": "Timesheet",
   "version": "0.0.1",
   "minAppVersion": "1.5.0",
-  "description": "Track tasks and time sessions with project links and Dataview-friendly storage.",
+  "description": "Track tasks and time sessions with JSON storage and project task suggestions.",
   "author": "",
   "authorUrl": "",
   "isDesktopOnly": false
