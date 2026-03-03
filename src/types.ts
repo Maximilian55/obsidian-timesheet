@@ -1,30 +1,23 @@
-export interface TimesheetSession {
+export interface Session {
   id: string;
-  project: string;
+  project: string; // wikilink e.g. [[My Project]]
   task: string;
-  startTime: string;
-  endTime?: string;
-  durationMinutes?: number;
+  start: string;  // ISO 8601
+  end?: string;   // ISO 8601, absent = still running
 }
 
-export interface TaskHistoryEntry {
-  name: string;
-  lastUsedAt: string;
-  useCount: number;
+export interface Store {
+  sessions: Session[];
 }
 
-export interface TimesheetPluginData {
-  schemaVersion: number;
-  sessions: TimesheetSession[];
-  taskHistoryByProject: Record<string, TaskHistoryEntry[]>;
-}
+export function formatDuration(ms: number): string {
+  if (ms < 0) ms = 0;
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
 
-export interface TimesheetPluginSettings {
-  timesheetJsonPath: string;
-  projectNotesFolder: string;
-}
-
-export interface PersistedPluginState {
-  settings?: Partial<TimesheetPluginSettings>;
-  sessions?: TimesheetSession[];
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m`;
+  return `${seconds}s`;
 }

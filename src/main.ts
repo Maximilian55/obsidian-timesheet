@@ -1,131 +1,227 @@
-import { Notice, Plugin } from "obsidian";
-import { registerCommands } from "./commands";
-import { SettingsTab, getDefaultSettings } from "./settings/index";
-import { JsonStore } from "./storage/json-store";
-import { SessionManager } from "./tracker/session-manager";
-import {
-  PersistedPluginState,
-  TimesheetPluginData,
-  TimesheetPluginSettings,
-  TimesheetSession,
-} from "./types";
+import { Events, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
+import { JsonStore } from "./store";
+import { Session } from "./types";
+import { StatusBarTimer } from "./statusbar";
+import { SessionsView, VIEW_TYPE } from "./sessions-view";
+import { StartModal, StopModal } from "./modals";
 
-function buildTaskHistoryFromSessions(sessions: TimesheetSession[]): Record<string, { name: string; lastUsedAt: string; useCount: number }[]> {
-  const byProject = new Map<string, Map<string, { name: string; lastUsedAt: string; useCount: number }>>();
+// ── Settings ──────────────────────────────────────────────────────────────────
 
-  for (const session of sessions) {
-    const project = session.project;
-    const task = session.task;
-    const when = session.endTime ?? session.startTime;
-
-    if (!byProject.has(project)) {
-      byProject.set(project, new Map());
-    }
-
-    const map = byProject.get(project)!;
-    const key = task.toLowerCase();
-    const existing = map.get(key);
-
-    if (existing) {
-      map.set(key, {
-        ...existing,
-        useCount: existing.useCount + 1,
-        lastUsedAt: existing.lastUsedAt < when ? when : existing.lastUsedAt,
-      });
-    } else {
-      map.set(key, {
-        name: task,
-        useCount: 1,
-        lastUsedAt: when,
-      });
-    }
-  }
-
-  const output: Record<string, { name: string; lastUsedAt: string; useCount: number }[]> = {};
-  for (const [project, entries] of byProject.entries()) {
-    output[project] = [...entries.values()];
-  }
-
-  return output;
+interface PluginSettings {
+  jsonPath: string;
+  projectFolder: string;
 }
 
-export default class TimesheetPlugin extends Plugin {
-  public settings: TimesheetPluginSettings = getDefaultSettings();
-  public data: TimesheetPluginData = {
-    schemaVersion: 1,
-    sessions: [],
-    taskHistoryByProject: {},
+function defaultSettings(): PluginSettings {
+  return {
+    jsonPath: "Timesheets/timesheet-data.json",
+    projectFolder: "notes/projects",
   };
+}
 
-  public jsonStore!: JsonStore;
-  public sessionManager!: SessionManager;
+// ── Plugin ────────────────────────────────────────────────────────────────────
 
-  private legacySessions: TimesheetSession[] = [];
+export default class TimesheetPlugin extends Plugin {
+  sessions: Session[] = [];
+  jsonStore!: JsonStore;
+  settings: PluginSettings = defaultSettings();
+  readonly events = new Events();
+
+  private statusBarTimer: StatusBarTimer | null = null;
 
   async onload(): Promise<void> {
-    await this.loadState();
+    // Load persisted settings
+    const saved = (await this.loadData()) as
+      | Partial<{ settings: Partial<PluginSettings> }>
+      | null
+      | undefined;
+    this.settings = { ...defaultSettings(), ...(saved?.settings ?? {}) };
 
-    this.jsonStore = new JsonStore(this.app, this.settings.timesheetJsonPath);
+    // Load sessions from JSON file
+    this.jsonStore = new JsonStore(this.app, this.settings.jsonPath);
+    this.sessions = await this.jsonStore.load();
 
-    const stored = await this.jsonStore.load();
-    if (stored.sessions.length === 0 && this.legacySessions.length > 0) {
-      this.data = {
-        schemaVersion: 1,
-        sessions: [...this.legacySessions],
-        taskHistoryByProject: buildTaskHistoryFromSessions(this.legacySessions),
-      };
-      await this.jsonStore.save(this.data);
-    } else {
-      this.data = stored;
-    }
+    // Register sidebar view
+    this.registerView(VIEW_TYPE, (leaf) => new SessionsView(leaf, this));
 
-    this.sessionManager = new SessionManager(this.data, async (data) => {
-      await this.persistData(data);
+    // Status bar
+    const statusBarEl = this.addStatusBarItem();
+    this.statusBarTimer = new StatusBarTimer(this, statusBarEl);
+
+    // Commands
+    this.addCommand({
+      id: "start-task",
+      name: "Start Task",
+      callback: () => new StartModal(this).open(),
     });
 
-    this.addSettingTab(new SettingsTab(this));
-    registerCommands(this);
+    this.addCommand({
+      id: "stop-task",
+      name: "Stop Task",
+      callback: () => new StopModal(this).open(),
+    });
+
+    this.addCommand({
+      id: "stop-all-tasks",
+      name: "Stop All Tasks",
+      callback: async () => {
+        const active = this.getActiveSessions();
+        if (active.length === 0) {
+          new Notice("No active tasks.");
+          return;
+        }
+        for (const s of active) await this.stopSession(s.id);
+        new Notice(`Stopped ${active.length} task(s).`);
+      },
+    });
+
+    this.addCommand({
+      id: "open-sessions-view",
+      name: "Open Timesheet",
+      callback: async () => {
+        const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE);
+        if (existing.length > 0) {
+          this.app.workspace.revealLeaf(existing[0]);
+          return;
+        }
+        const leaf = this.app.workspace.getRightLeaf(false);
+        if (leaf) {
+          await leaf.setViewState({ type: VIEW_TYPE, active: true });
+          this.app.workspace.revealLeaf(leaf);
+        }
+      },
+    });
+
+    // Settings tab
+    this.addSettingTab(new TimesheetSettingsTab(this));
 
     new Notice("Timesheet plugin loaded.");
   }
 
-  async updateSettings(partial: Partial<TimesheetPluginSettings>): Promise<void> {
-    const previousJsonPath = this.settings.timesheetJsonPath;
+  async onunload(): Promise<void> {
+    this.statusBarTimer?.destroy();
+  }
 
-    this.settings = {
-      ...this.settings,
-      ...partial,
+  // ── Mutations (each saves + fires "sessions-changed") ─────────────────────
+
+  async startSession(project: string, task: string): Promise<Session> {
+    const session: Session = {
+      id: `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`,
+      project,
+      task,
+      start: new Date().toISOString(),
     };
+    this.sessions.push(session);
+    await this.persist();
+    const projectName = project.replace(/^\[\[|\]\]$/g, "");
+    new Notice(`Started: ${projectName} — ${task}`);
+    return session;
+  }
 
-    await this.saveState();
+  async stopSession(id: string): Promise<void> {
+    const session = this.sessions.find((s) => s.id === id && !s.end);
+    if (!session) return;
+    session.end = new Date().toISOString();
+    await this.persist();
+    const projectName = session.project.replace(/^\[\[|\]\]$/g, "");
+    new Notice(`Stopped: ${projectName} — ${session.task}`);
+  }
 
-    if (previousJsonPath !== this.settings.timesheetJsonPath) {
-      this.jsonStore = new JsonStore(this.app, this.settings.timesheetJsonPath);
-      await this.jsonStore.save(this.data);
-      new Notice("Timesheet JSON path updated.");
+  async editSession(id: string, patch: Partial<Session>): Promise<void> {
+    const session = this.sessions.find((s) => s.id === id);
+    if (!session) return;
+    Object.assign(session, patch);
+    await this.persist();
+  }
+
+  async deleteSession(id: string): Promise<void> {
+    this.sessions = this.sessions.filter((s) => s.id !== id);
+    await this.persist();
+  }
+
+  // ── Queries (derived, no stored state) ───────────────────────────────────
+
+  getActiveSessions(): Session[] {
+    return this.sessions.filter((s) => !s.end);
+  }
+
+  getTaskSuggestions(project: string): string[] {
+    const byTask = new Map<string, { name: string; lastUsed: string }>();
+    for (const s of this.sessions) {
+      if (s.project !== project) continue;
+      const key = s.task.toLowerCase();
+      const existing = byTask.get(key);
+      const when = s.end ?? s.start;
+      if (!existing || existing.lastUsed < when) {
+        byTask.set(key, { name: s.task, lastUsed: when });
+      }
     }
+    return [...byTask.values()]
+      .sort((a, b) => b.lastUsed.localeCompare(a.lastUsed))
+      .map((e) => e.name);
   }
 
-  private async loadState(): Promise<void> {
-    const raw = ((await this.loadData()) ?? {}) as PersistedPluginState;
+  // ── Settings ──────────────────────────────────────────────────────────────
 
-    this.settings = {
-      ...getDefaultSettings(),
-      ...(raw.settings ?? {}),
-    };
-
-    this.legacySessions = Array.isArray(raw.sessions) ? raw.sessions : [];
+  async updateSettings(partial: Partial<PluginSettings>): Promise<void> {
+    const prevPath = this.settings.jsonPath;
+    this.settings = { ...this.settings, ...partial };
+    if (prevPath !== this.settings.jsonPath) {
+      this.jsonStore = new JsonStore(this.app, this.settings.jsonPath);
+      await this.jsonStore.save(this.sessions);
+    }
+    await this.saveData({ settings: this.settings });
   }
 
-  private async persistData(data: TimesheetPluginData): Promise<void> {
-    this.data = data;
-    await this.saveState();
-    await this.jsonStore.save(this.data);
+  // ── Persistence ───────────────────────────────────────────────────────────
+
+  private async persist(): Promise<void> {
+    await this.jsonStore.save(this.sessions);
+    await this.saveData({ settings: this.settings });
+    this.events.trigger("sessions-changed");
+  }
+}
+
+// ── Settings tab ──────────────────────────────────────────────────────────────
+
+class TimesheetSettingsTab extends PluginSettingTab {
+  private readonly plugin: TimesheetPlugin;
+
+  constructor(plugin: TimesheetPlugin) {
+    super(plugin.app, plugin);
+    this.plugin = plugin;
   }
 
-  private async saveState(): Promise<void> {
-    await this.saveData({
-      settings: this.settings,
-    });
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+    containerEl.createEl("h2", { text: "Timesheet" });
+
+    new Setting(containerEl)
+      .setName("Timesheet JSON path")
+      .setDesc("Vault path for timesheet data storage.")
+      .addText((text) => {
+        text
+          .setPlaceholder("Timesheets/timesheet-data.json")
+          .setValue(this.plugin.settings.jsonPath)
+          .onChange(async (value) => {
+            const trimmed = value.trim();
+            await this.plugin.updateSettings({
+              jsonPath: trimmed || "Timesheets/timesheet-data.json",
+            });
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Project notes folder")
+      .setDesc("Only notes in this folder appear in the project picker.")
+      .addText((text) => {
+        text
+          .setPlaceholder("notes/projects")
+          .setValue(this.plugin.settings.projectFolder)
+          .onChange(async (value) => {
+            await this.plugin.updateSettings({ projectFolder: value.trim() });
+          });
+      });
   }
 }

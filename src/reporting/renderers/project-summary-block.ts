@@ -1,1 +1,0 @@
-// Project summary block scaffold.
