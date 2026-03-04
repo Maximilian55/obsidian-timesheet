@@ -1,6 +1,27 @@
 import { App, TFile } from "obsidian";
 import { Session } from "./types";
 
+// Handles both the new {start, end} shape and the legacy {startTime, endTime} shape.
+function normalize(raw: Record<string, unknown>): Session {
+  return {
+    id: String(raw.id ?? ""),
+    project: String(raw.project ?? ""),
+    task: String(raw.task ?? ""),
+    start: String(raw.start ?? raw.startTime ?? ""),
+    end: raw.end != null
+      ? String(raw.end)
+      : raw.endTime != null
+        ? String(raw.endTime)
+        : undefined,
+  };
+}
+
+function parseArray(arr: unknown[]): Session[] {
+  return arr
+    .filter((s) => s && typeof s === "object")
+    .map((s) => normalize(s as Record<string, unknown>));
+}
+
 export class JsonStore {
   private readonly app: App;
   private readonly path: string;
@@ -19,11 +40,11 @@ export class JsonStore {
 
     try {
       const parsed = JSON.parse(content) as unknown;
-      if (Array.isArray(parsed)) return parsed as Session[];
+      if (Array.isArray(parsed)) return parseArray(parsed);
       // Handle legacy format where sessions were nested in an object
       if (parsed && typeof parsed === "object") {
         const obj = parsed as Record<string, unknown>;
-        if (Array.isArray(obj.sessions)) return obj.sessions as Session[];
+        if (Array.isArray(obj.sessions)) return parseArray(obj.sessions);
       }
       return [];
     } catch {

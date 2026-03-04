@@ -5,16 +5,16 @@ import { StatusBarTimer } from "./statusbar";
 import { SessionsView, VIEW_TYPE } from "./sessions-view";
 import { StartModal, StopModal } from "./modals";
 
+const SESSIONS_JSON_PATH = "Timesheets/timesheet-data.json";
+
 // ── Settings ──────────────────────────────────────────────────────────────────
 
 interface PluginSettings {
-  jsonPath: string;
   projectFolder: string;
 }
 
 function defaultSettings(): PluginSettings {
   return {
-    jsonPath: "Timesheets/timesheet-data.json",
     projectFolder: "notes/projects",
   };
 }
@@ -38,7 +38,7 @@ export default class TimesheetPlugin extends Plugin {
     this.settings = { ...defaultSettings(), ...(saved?.settings ?? {}) };
 
     // Load sessions from JSON file
-    this.jsonStore = new JsonStore(this.app, this.settings.jsonPath);
+    this.jsonStore = new JsonStore(this.app, SESSIONS_JSON_PATH);
     this.sessions = await this.jsonStore.load();
 
     // Register sidebar view
@@ -84,11 +84,11 @@ export default class TimesheetPlugin extends Plugin {
           this.app.workspace.revealLeaf(existing[0]);
           return;
         }
-        const leaf = this.app.workspace.getRightLeaf(false);
-        if (leaf) {
-          await leaf.setViewState({ type: VIEW_TYPE, active: true });
-          this.app.workspace.revealLeaf(leaf);
-        }
+        const leaf =
+          this.app.workspace.getRightLeaf(false) ??
+          this.app.workspace.getLeaf(true);
+        await leaf.setViewState({ type: VIEW_TYPE, active: true });
+        this.app.workspace.revealLeaf(leaf);
       },
     });
 
@@ -127,7 +127,7 @@ export default class TimesheetPlugin extends Plugin {
     new Notice(`Stopped: ${projectName} — ${session.task}`);
   }
 
-  async editSession(id: string, patch: Partial<Session>): Promise<void> {
+  async editSession(id: string, patch: Omit<Partial<Session>, "id">): Promise<void> {
     const session = this.sessions.find((s) => s.id === id);
     if (!session) return;
     Object.assign(session, patch);
@@ -146,30 +146,31 @@ export default class TimesheetPlugin extends Plugin {
   }
 
   getTaskSuggestions(project: string): string[] {
-    const byTask = new Map<string, { name: string; lastUsed: string }>();
+    const byTask = new Map<string, { name: string; lastUsed: string; count: number }>();
     for (const s of this.sessions) {
       if (s.project !== project) continue;
       const key = s.task.toLowerCase();
       const existing = byTask.get(key);
       const when = s.end ?? s.start;
-      if (!existing || existing.lastUsed < when) {
-        byTask.set(key, { name: s.task, lastUsed: when });
+      if (!existing) {
+        byTask.set(key, { name: s.task, lastUsed: when, count: 1 });
+      } else {
+        byTask.set(key, {
+          name: existing.name,
+          lastUsed: existing.lastUsed < when ? when : existing.lastUsed,
+          count: existing.count + 1,
+        });
       }
     }
     return [...byTask.values()]
-      .sort((a, b) => b.lastUsed.localeCompare(a.lastUsed))
+      .sort((a, b) => b.count - a.count || b.lastUsed.localeCompare(a.lastUsed))
       .map((e) => e.name);
   }
 
   // ── Settings ──────────────────────────────────────────────────────────────
 
   async updateSettings(partial: Partial<PluginSettings>): Promise<void> {
-    const prevPath = this.settings.jsonPath;
     this.settings = { ...this.settings, ...partial };
-    if (prevPath !== this.settings.jsonPath) {
-      this.jsonStore = new JsonStore(this.app, this.settings.jsonPath);
-      await this.jsonStore.save(this.sessions);
-    }
     await this.saveData({ settings: this.settings });
   }
 
@@ -196,21 +197,6 @@ class TimesheetSettingsTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "Timesheet" });
-
-    new Setting(containerEl)
-      .setName("Timesheet JSON path")
-      .setDesc("Vault path for timesheet data storage.")
-      .addText((text) => {
-        text
-          .setPlaceholder("Timesheets/timesheet-data.json")
-          .setValue(this.plugin.settings.jsonPath)
-          .onChange(async (value) => {
-            const trimmed = value.trim();
-            await this.plugin.updateSettings({
-              jsonPath: trimmed || "Timesheets/timesheet-data.json",
-            });
-          });
-      });
 
     new Setting(containerEl)
       .setName("Project notes folder")

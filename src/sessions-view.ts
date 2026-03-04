@@ -1,4 +1,4 @@
-import { EventRef, ItemView, WorkspaceLeaf } from "obsidian";
+import { EventRef, ItemView, Notice, WorkspaceLeaf } from "obsidian";
 import type TimesheetPlugin from "./main";
 import { Session, formatDuration } from "./types";
 import { EditSessionModal, StartModal } from "./modals";
@@ -24,7 +24,7 @@ function dateLabel(iso: string): string {
 function groupByDate(sessions: Session[]): Map<string, Session[]> {
   const groups = new Map<string, Session[]>();
   for (const s of [...sessions].sort((a, b) =>
-    b.start.localeCompare(a.start),
+    (b.start ?? "").localeCompare(a.start ?? ""),
   )) {
     const label = dateLabel(s.start);
     const arr = groups.get(label) ?? [];
@@ -60,7 +60,12 @@ export class SessionsView extends ItemView {
     this.eventRef = this.plugin.events.on("sessions-changed", () =>
       this.render(),
     );
-    this.render();
+    try {
+      this.render();
+    } catch (e) {
+      new Notice(`Timesheet view error: ${String(e)}`);
+      console.error("Timesheet: render failed in onOpen", e);
+    }
   }
 
   async onClose(): Promise<void> {
@@ -94,7 +99,7 @@ export class SessionsView extends ItemView {
     startBtn.addEventListener("click", () => new StartModal(this.plugin).open());
 
     const sessions = [...this.plugin.sessions].sort((a, b) =>
-      b.start.localeCompare(a.start),
+      (b.start ?? "").localeCompare(a.start ?? ""),
     );
 
     if (sessions.length === 0) {
@@ -154,13 +159,19 @@ export class SessionsView extends ItemView {
       `width:7px;height:7px;border-radius:50%;flex-shrink:0;` +
       `background:${isActive ? "var(--color-green)" : "var(--background-modifier-border)"}`;
 
-    // Project / task label
+    // Project / task label + start time
     const info = row.createDiv();
     info.style.cssText = "flex:1;min-width:0";
     const project = session.project.replace(/^\[\[|\]\]$/g, "");
     const label = info.createEl("div", { text: `${project} / ${session.task}` });
     label.style.cssText =
       "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.85em";
+    const startTime = new Date(session.start).toLocaleTimeString(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    const timeEl = info.createEl("div", { text: startTime });
+    timeEl.style.cssText = "font-size:0.75em;color:var(--text-muted);margin-top:1px";
 
     // Duration
     const durationEl = row.createSpan({ cls: "session-duration" });
@@ -174,6 +185,16 @@ export class SessionsView extends ItemView {
       const elapsed =
         new Date(session.end!).getTime() - new Date(session.start).getTime();
       durationEl.textContent = formatDuration(elapsed);
+    }
+
+    // Stop button (active sessions only)
+    if (isActive) {
+      const stopBtn = row.createEl("button");
+      stopBtn.textContent = "■";
+      stopBtn.style.cssText =
+        "background:none;border:none;cursor:pointer;padding:2px 4px;" +
+        "font-size:0.85em;flex-shrink:0;color:var(--color-red)";
+      stopBtn.addEventListener("click", () => void this.plugin.stopSession(session.id));
     }
 
     // Edit button

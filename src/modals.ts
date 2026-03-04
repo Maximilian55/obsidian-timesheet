@@ -349,6 +349,7 @@ export class EditSessionModal extends Modal {
     });
 
     deleteBtn.addEventListener("click", async () => {
+      if (!window.confirm("Delete this session? This cannot be undone.")) return;
       await this.plugin.deleteSession(this.session.id);
       this.close();
     });
