@@ -4,6 +4,7 @@ import { Session } from "./types";
 import { StatusBarTimer } from "./statusbar";
 import { SessionsView, VIEW_TYPE } from "./sessions-view";
 import { StartModal, StopModal } from "./modals";
+import { registerReporter } from "./reporter";
 
 const SESSIONS_JSON_PATH = "Timesheets/timesheet-data.json";
 
@@ -91,6 +92,9 @@ export default class TimesheetPlugin extends Plugin {
         this.app.workspace.revealLeaf(leaf);
       },
     });
+
+    // Code block reporter
+    registerReporter(this);
 
     // Settings tab
     this.addSettingTab(new TimesheetSettingsTab(this));
